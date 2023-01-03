@@ -104,16 +104,18 @@ async fn submit(
 
     file.flush().await?;
 
-    data.channel
-        .send(job.id)
-        .map_err(|_| error::ErrorInternalServerError("Failed to internally queue"))?;
+    let id = job.id;
 
     let response = SubmitResponse {
-        id: job.id.to_string(),
+        id: id.to_string(),
     };
 
     let mut jobs = data.jobs.lock().unwrap();
     jobs.insert(job.id, job);
+
+    data.channel
+        .send(id)
+        .map_err(|_| error::ErrorInternalServerError("Failed to internally queue"))?;
 
     Ok(web::Json(response))
 }
