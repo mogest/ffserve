@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::models::{Job, FileType, MutexedJobs, State, build_path};
 
-const ARGUMENTS_COMMON: &'static str = "-i $INPUT -vf scale=1280x720 -b:v 1024k -minrate 512k -maxrate 1485k -tile-columns 2 -g 240 -quality good -crf 32 -c:v libvpx-vp9 -speed 4";
+const ARGUMENTS_COMMON: &'static str = "-i $INPUT -vf scale=1280x720 -b:v 1024k -minrate 512k -maxrate 1485k -tile-columns 2 -g 240 -quality good -crf 32 -c:v libvpx-vp9 -speed 4 -map_metadata -1";
 const ARGUMENTS_PASS_1: &'static str = "-pass 1 -an -f null /dev/null";
 const ARGUMENTS_PASS_2: &'static str = "-pass 2 -c:a libopus -y $OUTPUT";
 
