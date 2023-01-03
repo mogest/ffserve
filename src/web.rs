@@ -88,13 +88,9 @@ async fn submit(
         completed_at: None,
     };
 
-    let mut res = awc::Client::default()
-        .get(&job.source_url)
-        .send()
-        .await
-        .map_err(|e| error::ErrorBadRequest(format!("GET request failed: {}", e.to_string())))?;
+    println!("[{}] downloading source URL {}", job.id, job.source_url);
 
-    let mut stream = res.take_payload();
+    let mut stream = download(&job.source_url).await?;
 
     let mut file = fs::File::create(build_path(job.id, FileType::Input)).await?;
 
@@ -118,6 +114,16 @@ async fn submit(
         .map_err(|_| error::ErrorInternalServerError("Failed to internally queue"))?;
 
     Ok(web::Json(response))
+}
+
+async fn download(url: &str) -> Result<impl futures::stream::Stream<Item = Result<web::Bytes, actix_web::error::PayloadError>>> {
+    let mut res = awc::Client::default()
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| error::ErrorBadRequest(format!("GET request failed: {}", e.to_string())))?;
+
+    return Ok(res.take_payload());
 }
 
 fn get_port() -> u16 {
