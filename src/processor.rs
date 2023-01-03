@@ -18,8 +18,6 @@ where
 fn upload(id: Uuid, url: &str) -> std::io::Result<()> {
     let file = std::fs::File::open(build_path(id, FileType::Output))?;
 
-    println!("uploading to {}", url);
-
     let client = reqwest::blocking::Client::new();
 
     let response = client.put(url).body(file).send();
@@ -88,10 +86,10 @@ fn update_state(
 }
 
 fn transcode(job: Job) -> std::io::Result<()> {
-    println!("processor got ID {}", job.id);
-
     run_ffmpeg(build_arguments(job.id, Pass::One), &"ffmpeg pass 1")?;
     run_ffmpeg(build_arguments(job.id, Pass::Two), &"ffmpeg pass 2")?;
+
+    println!("[{}] processor: starting upload to URL {}", job.id, job.dest_url);
 
     upload(job.id, &job.dest_url)?;
 
@@ -100,10 +98,21 @@ fn transcode(job: Job) -> std::io::Result<()> {
 
 fn process_job(id: Uuid, jobs: MutexedJobs) {
     if let Some(job) = update_state(jobs.clone(), id, State::Processing, None) {
+        println!("[{}] processor: starting ffmpeg", id);
+
         match transcode(job) {
-            Ok(_) => update_state(jobs.clone(), id, State::Done, None),
-            Err(err) => update_state(jobs.clone(), id, State::Error, Some(err.to_string())),
+            Ok(_) => {
+                update_state(jobs.clone(), id, State::Done, None);
+                println!("[{}] processor: complete", id);
+            },
+            Err(err) => {
+                update_state(jobs.clone(), id, State::Error, Some(err.to_string()));
+                println!("[{}] processor: ended with error: {}", id, err.to_string());
+            },
         };
+    }
+    else {
+        println!("[{}] processor: no such job registered, ignoring", id);
     }
 }
 
@@ -114,7 +123,7 @@ pub fn processor(rx: std::sync::mpsc::Receiver<Uuid>, jobs: MutexedJobs) {
         match rx.recv() {
             Ok(id) => process_job(id, jobs.clone()),
             Err(_) => {
-                println!("processor shutting down");
+                println!("Transcoding processor shutdown");
                 return;
             }
         }
