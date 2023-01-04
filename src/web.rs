@@ -1,4 +1,7 @@
-use actix_web::{error, get, post, web, App, HttpMessage, HttpServer, Responder, Result};
+use actix_web::{
+    error, get, http::StatusCode, post, web, App, HttpMessage, HttpResponse, HttpServer, Responder,
+    Result,
+};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -8,9 +11,14 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
+use crate::command::{probe, Metadata};
 use crate::models::{build_path, FileType, Job, MutexedJobs, State};
 
 const COMPLETED_EXPIRY_DURATION: Duration = Duration::from_secs(60 * 60);
+
+// FIXME : these should be options (environment variables?) instead of being hardcoded
+const MAXIMUM_VIDEO_LENGTH_SECONDS: Option<u32> = Some(120);
+const REQUIRE_LANDSCAPE_ORIENTATION: bool = true;
 
 struct AppState {
     jobs: MutexedJobs,
@@ -38,6 +46,20 @@ struct SubmitParams {
 #[derive(Serialize)]
 struct SubmitResponse {
     id: String,
+    metadata: Metadata,
+}
+
+#[derive(Serialize)]
+enum ErrorType {
+    InvalidVideo,
+    VideoTooLong,
+    IncorrectOrientation,
+}
+
+#[derive(Serialize)]
+struct ErrorResponse {
+    error: ErrorType,
+    description: String,
 }
 
 #[get("/")]
@@ -74,6 +96,13 @@ async fn status(data: web::Data<AppState>) -> Result<impl Responder> {
     Ok(web::Json(response))
 }
 
+fn build_error_response(error_type: ErrorType, description: &str) -> HttpResponse {
+    HttpResponse::build(StatusCode::BAD_REQUEST).json(ErrorResponse {
+        error: error_type,
+        description: description.to_owned(),
+    })
+}
+
 #[post("/")]
 async fn submit(
     data: web::Data<AppState>,
@@ -92,19 +121,52 @@ async fn submit(
 
     let mut stream = download(&job.source_url).await?;
 
-    let mut file = fs::File::create(build_path(job.id, FileType::Input)).await?;
+    let path = build_path(job.id, FileType::Input);
 
-    while let Some(item) = stream.next().await {
-        tokio::io::copy(&mut item?.as_ref(), &mut file).await?;
+    {
+        let mut file = fs::File::create(&path).await?;
+
+        while let Some(item) = stream.next().await {
+            tokio::io::copy(&mut item?.as_ref(), &mut file).await?;
+        }
+
+        file.flush().await?;
     }
 
-    file.flush().await?;
+    let metadata = match probe(&path) {
+        Ok(data) => data,
+        Err(err) => {
+            println!("[{}] Probe failed: {:?}", job.id, err);
+            return Ok(build_error_response(
+                ErrorType::InvalidVideo,
+                "Supplied file is not in a recognised video format",
+            ));
+        }
+    };
+
+    println!("[{}] Video metadata: {:?}", job.id, metadata);
+
+    if let Some(max_length) = MAXIMUM_VIDEO_LENGTH_SECONDS {
+        if metadata.duration > max_length {
+            println!("[{}] Failed, duration too long", job.id);
+            return Ok(build_error_response(
+                ErrorType::VideoTooLong,
+                &format!("Video duration is greater than {max_length} seconds"),
+            ));
+        }
+    }
+
+    if REQUIRE_LANDSCAPE_ORIENTATION && metadata.height > metadata.width {
+        println!("[{}] Failed, incorrect orientation", job.id);
+        return Ok(build_error_response(
+            ErrorType::IncorrectOrientation,
+            "Video is in portrait orientation, only landscape videos are accepted",
+        ));
+    }
 
     let id = job.id;
 
-    let response = SubmitResponse {
-        id: id.to_string(),
-    };
+    let response = SubmitResponse { id: id.to_string(), metadata };
 
     let mut jobs = data.jobs.lock().unwrap();
     jobs.insert(job.id, job);
@@ -113,15 +175,17 @@ async fn submit(
         .send(id)
         .map_err(|_| error::ErrorInternalServerError("Failed to internally queue"))?;
 
-    Ok(web::Json(response))
+    Ok(HttpResponse::build(StatusCode::OK).json(response))
 }
 
-async fn download(url: &str) -> Result<impl futures::stream::Stream<Item = Result<web::Bytes, actix_web::error::PayloadError>>> {
-    let mut res = awc::Client::default()
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| error::ErrorBadRequest(format!("GET request failed: {}", e.to_string())))?;
+async fn download(
+    url: &str,
+) -> Result<impl futures::stream::Stream<Item = Result<web::Bytes, actix_web::error::PayloadError>>>
+{
+    let mut res =
+        awc::Client::default().get(url).send().await.map_err(|e| {
+            error::ErrorBadRequest(format!("GET request failed: {}", e.to_string()))
+        })?;
 
     return Ok(res.take_payload());
 }
