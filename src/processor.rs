@@ -1,8 +1,8 @@
-use std::process::{Command, Stdio};
 use std::time::Instant;
 use uuid::Uuid;
 
 use crate::models::{Job, FileType, MutexedJobs, State, build_path};
+use crate::command::run_command;
 
 const ARGUMENTS_COMMON: &'static str = "-i $INPUT -vf scale=1280x720 -b:v 1024k -minrate 512k -maxrate 1485k -tile-columns 2 -g 240 -quality good -crf 32 -c:v libvpx-vp9 -speed 4 -map_metadata -1";
 const ARGUMENTS_PASS_1: &'static str = "-pass 1 -an -f null /dev/null";
@@ -44,24 +44,6 @@ fn build_arguments(id: Uuid, pass: Pass) -> Vec<String> {
     ).collect()
 }
 
-fn run_ffmpeg(arguments: Vec<String>, descriptor: &str) -> std::io::Result<()> {
-    let mut process = Command::new("ffmpeg")
-        .args(arguments)
-        .stdout(Stdio::piped())
-        .spawn()?;
-
-    let exit_status = process.wait()?;
-
-    if !exit_status.success() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("{descriptor} failed"),
-        ));
-    }
-
-    return Ok(());
-}
-
 fn update_state(
     guarded_jobs: MutexedJobs,
     id: Uuid,
@@ -86,8 +68,8 @@ fn update_state(
 }
 
 fn transcode(job: Job) -> std::io::Result<()> {
-    run_ffmpeg(build_arguments(job.id, Pass::One), &"ffmpeg pass 1")?;
-    run_ffmpeg(build_arguments(job.id, Pass::Two), &"ffmpeg pass 2")?;
+    run_command("ffmpeg", build_arguments(job.id, Pass::One), &"ffmpeg pass 1")?;
+    run_command("ffmpeg", build_arguments(job.id, Pass::Two), &"ffmpeg pass 2")?;
 
     println!("[{}] processor: starting upload to URL {}", job.id, job.dest_url);
 

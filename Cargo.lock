@@ -444,6 +444,7 @@ dependencies = [
  "actix-web",
  "awc",
  "futures",
+ "regex",
  "reqwest",
  "rustls",
  "serde",

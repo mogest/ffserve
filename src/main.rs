@@ -10,6 +10,7 @@ use crate::processor::processor;
 mod web;
 mod models;
 mod processor;
+mod command;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
