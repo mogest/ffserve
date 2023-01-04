@@ -7,10 +7,11 @@ use std::thread;
 use crate::web::start_web_server;
 use crate::processor::processor;
 
-mod web;
+mod command;
+mod config;
 mod models;
 mod processor;
-mod command;
+mod web;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {

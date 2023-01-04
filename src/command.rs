@@ -31,11 +31,15 @@ pub fn run_command(
 pub struct Metadata {
     pub width: u32,
     pub height: u32,
-    pub duration: u32,
+    pub duration: u64,
 }
 
 fn cap_u32(cap: &regex::Captures, i: usize) -> u32 {
     cap.get(i).unwrap().as_str().parse::<u32>().unwrap()
+}
+
+fn cap_u64(cap: &regex::Captures, i: usize) -> u64 {
+    cap.get(i).unwrap().as_str().parse::<u64>().unwrap()
 }
 
 pub fn probe(path: &str) -> std::io::Result<Metadata> {
@@ -50,9 +54,9 @@ pub fn probe(path: &str) -> std::io::Result<Metadata> {
         .captures(&text)
         .ok_or(io_err("no duration found"))?;
 
-    let duration = cap_u32(&duration_cap, 1) * 3600
-        + cap_u32(&duration_cap, 2) * 60
-        + cap_u32(&duration_cap, 3);
+    let duration = cap_u64(&duration_cap, 1) * 3600
+        + cap_u64(&duration_cap, 2) * 60
+        + cap_u64(&duration_cap, 3);
 
     let resolution_re = Regex::new(r"(?m)^  Stream [^ ]+: Video: .*, (\d\d\d+)x(\d\d\d+)").unwrap();
     let resolution_cap = resolution_re

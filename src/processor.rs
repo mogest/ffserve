@@ -1,12 +1,9 @@
 use std::time::Instant;
 use uuid::Uuid;
 
-use crate::models::{Job, FileType, MutexedJobs, State, build_path};
 use crate::command::run_command;
-
-const ARGUMENTS_COMMON: &'static str = "-i $INPUT -vf scale=1280x720 -b:v 1024k -minrate 512k -maxrate 1485k -tile-columns 2 -g 240 -quality good -crf 32 -c:v libvpx-vp9 -speed 4 -map_metadata -1";
-const ARGUMENTS_PASS_1: &'static str = "-pass 1 -an -f null /dev/null";
-const ARGUMENTS_PASS_2: &'static str = "-pass 2 -c:a libopus -y $OUTPUT";
+use crate::config::CONFIG;
+use crate::models::{build_path, FileType, Job, MutexedJobs, State};
 
 fn error_to_io_error<T, U>(result: Result<T, U>) -> Result<T, std::io::Error>
 where
@@ -27,21 +24,15 @@ fn upload(id: Uuid, url: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-enum Pass { One, Two }
-
-fn build_arguments(id: Uuid, pass: Pass) -> Vec<String> {
-    let arguments = match pass {
-        Pass::One => format!("{ARGUMENTS_COMMON} {ARGUMENTS_PASS_1}"),
-        Pass::Two => format!("{ARGUMENTS_COMMON} {ARGUMENTS_PASS_2}"),
-    };
-
-    arguments.split(" ").map(|arg|
-        match arg {
+fn build_arguments(id: Uuid, arguments: &str) -> Vec<String> {
+    arguments
+        .split(" ")
+        .map(|arg| match arg {
             "$INPUT" => build_path(id, FileType::Input),
             "$OUTPUT" => build_path(id, FileType::Output),
-            other => other.to_owned()
-        }
-    ).collect()
+            other => other.to_owned(),
+        })
+        .collect()
 }
 
 fn update_state(
@@ -69,12 +60,25 @@ fn update_state(
 
 fn transcode(job: Job) -> std::io::Result<()> {
     println!("[{}] processor: starting ffmpeg pass 1", job.id);
-    run_command("ffmpeg", build_arguments(job.id, Pass::One), &"ffmpeg pass 1")?;
+    run_command(
+        "ffmpeg",
+        build_arguments(job.id, CONFIG.ffmpeg_arguments_pass_1),
+        &"ffmpeg pass 1",
+    )?;
 
-    println!("[{}] processor: starting ffmpeg pass 2", job.id);
-    run_command("ffmpeg", build_arguments(job.id, Pass::Two), &"ffmpeg pass 2")?;
+    if let Some(arguments) = CONFIG.ffmpeg_arguments_pass_2 {
+        println!("[{}] processor: starting ffmpeg pass 2", job.id);
+        run_command(
+            "ffmpeg",
+            build_arguments(job.id, arguments),
+            &"ffmpeg pass 2",
+        )?;
+    }
 
-    println!("[{}] processor: starting upload to URL {}", job.id, job.dest_url);
+    println!(
+        "[{}] processor: starting upload to URL {}",
+        job.id, job.dest_url
+    );
 
     upload(job.id, &job.dest_url)?;
 
@@ -87,14 +91,13 @@ fn process_job(id: Uuid, jobs: MutexedJobs) {
             Ok(_) => {
                 update_state(jobs.clone(), id, State::Done, None);
                 println!("[{}] processor: complete", id);
-            },
+            }
             Err(err) => {
                 update_state(jobs.clone(), id, State::Error, Some(err.to_string()));
                 println!("[{}] processor: ended with error: {}", id, err.to_string());
-            },
+            }
         };
-    }
-    else {
+    } else {
         println!("[{}] processor: no such job registered, ignoring", id);
     }
 }

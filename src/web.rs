@@ -12,13 +12,8 @@ use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
 use crate::command::{probe, Metadata};
+use crate::config::{VideoOrientation, CONFIG};
 use crate::models::{build_path, FileType, Job, MutexedJobs, State};
-
-const COMPLETED_EXPIRY_DURATION: Duration = Duration::from_secs(60 * 60);
-
-// FIXME : these should be options (environment variables?) instead of being hardcoded
-const MAXIMUM_VIDEO_LENGTH_SECONDS: Option<u32> = Some(120);
-const REQUIRE_LANDSCAPE_ORIENTATION: bool = true;
 
 struct AppState {
     jobs: MutexedJobs,
@@ -62,6 +57,64 @@ struct ErrorResponse {
     description: String,
 }
 
+fn validate_video_metadata(id: Uuid) -> std::result::Result<Metadata, (ErrorType, String)> {
+    let path = build_path(id, FileType::Input);
+
+    let metadata = match probe(&path) {
+        Ok(data) => data,
+        Err(err) => {
+            println!("[{}] Probe failed: {:?}", id, err);
+            return Err((
+                ErrorType::InvalidVideo,
+                "Supplied file is not in a recognised video format".to_owned(),
+            ));
+        }
+    };
+
+    println!("[{}] Video metadata: {:?}", id, metadata);
+
+    if let Some(max_length) = CONFIG.maximum_video_length {
+        if Duration::from_secs(metadata.duration) > max_length {
+            println!("[{}] Failed, duration too long", id);
+            return Err((
+                ErrorType::VideoTooLong,
+                format!(
+                    "Video duration is greater than {} seconds",
+                    max_length.as_secs()
+                ),
+            ));
+        }
+    }
+
+    match CONFIG.require_orientation {
+        Some(VideoOrientation::Landscape) => {
+            if metadata.height > metadata.width {
+                println!("[{}] Failed, incorrect orientation", id);
+                return Err((
+                    ErrorType::IncorrectOrientation,
+                    "Video is in portrait orientation, only landscape videos are accepted"
+                        .to_owned(),
+                ));
+            }
+        }
+
+        Some(VideoOrientation::Portrait) => {
+            if metadata.height < metadata.width {
+                println!("[{}] Failed, incorrect orientation", id);
+                return Err((
+                    ErrorType::IncorrectOrientation,
+                    "Video is in landscape orientation, only portrait videos are accepted"
+                        .to_owned(),
+                ));
+            }
+        }
+
+        None => {}
+    }
+
+    Ok(metadata)
+}
+
 #[get("/")]
 async fn status(data: web::Data<AppState>) -> Result<impl Responder> {
     let mut jobs = data.jobs.lock().unwrap();
@@ -72,7 +125,7 @@ async fn status(data: web::Data<AppState>) -> Result<impl Responder> {
 
     for (_, job) in jobs.iter() {
         if let Some(time) = job.completed_at {
-            if time.elapsed() > COMPLETED_EXPIRY_DURATION {
+            if time.elapsed() > CONFIG.expire_completed_jobs_after {
                 expired_jobs.push(job.id);
                 continue;
             }
@@ -133,40 +186,20 @@ async fn submit(
         file.flush().await?;
     }
 
-    let metadata = match probe(&path) {
-        Ok(data) => data,
-        Err(err) => {
-            println!("[{}] Probe failed: {:?}", job.id, err);
-            return Ok(build_error_response(
-                ErrorType::InvalidVideo,
-                "Supplied file is not in a recognised video format",
-            ));
+    let metadata = match validate_video_metadata(job.id) {
+        Ok(metadata) => metadata,
+        Err((error_type, description)) => {
+            let _ = tokio::fs::remove_file(path).await;
+            return Ok(build_error_response(error_type, &description));
         }
     };
 
-    println!("[{}] Video metadata: {:?}", job.id, metadata);
-
-    if let Some(max_length) = MAXIMUM_VIDEO_LENGTH_SECONDS {
-        if metadata.duration > max_length {
-            println!("[{}] Failed, duration too long", job.id);
-            return Ok(build_error_response(
-                ErrorType::VideoTooLong,
-                &format!("Video duration is greater than {max_length} seconds"),
-            ));
-        }
-    }
-
-    if REQUIRE_LANDSCAPE_ORIENTATION && metadata.height > metadata.width {
-        println!("[{}] Failed, incorrect orientation", job.id);
-        return Ok(build_error_response(
-            ErrorType::IncorrectOrientation,
-            "Video is in portrait orientation, only landscape videos are accepted",
-        ));
-    }
-
     let id = job.id;
 
-    let response = SubmitResponse { id: id.to_string(), metadata };
+    let response = SubmitResponse {
+        id: id.to_string(),
+        metadata,
+    };
 
     let mut jobs = data.jobs.lock().unwrap();
     jobs.insert(job.id, job);
@@ -180,8 +213,7 @@ async fn submit(
 
 async fn download(
     url: &str,
-) -> Result<impl futures::stream::Stream<Item = Result<web::Bytes, actix_web::error::PayloadError>>>
-{
+) -> Result<impl futures::stream::Stream<Item = Result<web::Bytes, error::PayloadError>>> {
     let mut res =
         awc::Client::default().get(url).send().await.map_err(|e| {
             error::ErrorBadRequest(format!("GET request failed: {}", e.to_string()))
