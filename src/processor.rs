@@ -68,7 +68,10 @@ fn update_state(
 }
 
 fn transcode(job: Job) -> std::io::Result<()> {
+    println!("[{}] processor: starting ffmpeg pass 1", job.id);
     run_command("ffmpeg", build_arguments(job.id, Pass::One), &"ffmpeg pass 1")?;
+
+    println!("[{}] processor: starting ffmpeg pass 2", job.id);
     run_command("ffmpeg", build_arguments(job.id, Pass::Two), &"ffmpeg pass 2")?;
 
     println!("[{}] processor: starting upload to URL {}", job.id, job.dest_url);
@@ -80,8 +83,6 @@ fn transcode(job: Job) -> std::io::Result<()> {
 
 fn process_job(id: Uuid, jobs: MutexedJobs) {
     if let Some(job) = update_state(jobs.clone(), id, State::Processing, None) {
-        println!("[{}] processor: starting ffmpeg", id);
-
         match transcode(job) {
             Ok(_) => {
                 update_state(jobs.clone(), id, State::Done, None);
