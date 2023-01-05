@@ -47,8 +47,6 @@ pub fn probe(path: &str) -> std::io::Result<Metadata> {
 
     let text = String::from_utf8(output.stderr).map_err(|_| io_err("invalid encoding"))?;
 
-    println!("probe output: {}", text);
-
     let duration_re = Regex::new(r"(?m)^  Duration: (\d\d):(\d\d):(\d\d)\.\d\d,").unwrap();
     let duration_cap = duration_re
         .captures(&text)
